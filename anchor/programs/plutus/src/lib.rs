@@ -1,6 +1,8 @@
 #![allow(clippy::result_large_err)]
+#![allow(unexpected_cfgs)]
 
 use anchor_lang::prelude::*;
+const ANCHOR_DISCRIMINATOR: usize = 8;
 
 declare_id!("coUnmi3oBUtwtd9fjeAvSsJssXh5A5xyPbhpewyzRVF");
 
@@ -8,63 +10,86 @@ declare_id!("coUnmi3oBUtwtd9fjeAvSsJssXh5A5xyPbhpewyzRVF");
 pub mod plutus {
     use super::*;
 
-  pub fn close(_ctx: Context<ClosePlutus>) -> Result<()> {
-    Ok(())
-  }
+    pub fn approve(ctx: Context<Approve>, amount: u64) -> Result<()> {
+        let approval_account = &mut ctx.accounts.approval;
+        approval_account.amount = amount;
+        approval_account.user = ctx.accounts.user.key();
+        approval_account.authority = ctx.accounts.authority_pda.key();
+        approval_account.nonce = Clock::get()?.unix_timestamp;
 
-  pub fn decrement(ctx: Context<Update>) -> Result<()> {
-    ctx.accounts.plutus.count = ctx.accounts.plutus.count.checked_sub(1).unwrap();
-    Ok(())
-  }
+        Ok(())
+    }
 
-  pub fn increment(ctx: Context<Update>) -> Result<()> {
-    ctx.accounts.plutus.count = ctx.accounts.plutus.count.checked_add(1).unwrap();
-    Ok(())
-  }
+    pub fn revoke(ctx: Context<Revoke>) -> Result<()> {
+        let approval_account = &mut ctx.accounts.approval;
 
-  pub fn initialize(_ctx: Context<InitializePlutus>) -> Result<()> {
-    Ok(())
-  }
+        // Only the original user can revoke
+        require!(
+            ctx.accounts.user.is_signer || ctx.accounts.authority_pda.is_signer,
+            CustomError::Unauthorized
+        );
 
-  pub fn set(ctx: Context<Update>, value: u8) -> Result<()> {
-    ctx.accounts.plutus.count = value.clone();
-    Ok(())
-  }
+        approval_account.amount = 0;
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
-pub struct InitializePlutus<'info> {
-  #[account(mut)]
-  pub payer: Signer<'info>,
+pub struct Approve<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
 
-  #[account(
-  init,
-  space = 8 + Plutus::INIT_SPACE,
-  payer = payer
+    #[account(
+      init,
+      payer = user,
+      space = ANCHOR_DISCRIMINATOR + Approval::INIT_SPACE,
+    )]
+    pub approval: Account<'info, Approval>,
+
+    #[account(
+      seeds = [user.key().as_ref(), b"plutus_trade_pda"] ,
+      bump
+    )]
+    pub authority_pda: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct Revoke<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    #[account(
+      mut,
+      close = user
+    )]
+    pub approval: Account<'info, Approval>,
+
+    #[account(
+      seeds = [user.key().as_ref(), b"plutus_trade_pda"],
+      bump,
+      signer
   )]
-  pub plutus: Account<'info, Plutus>,
-  pub system_program: Program<'info, System>,
-}
-#[derive(Accounts)]
-pub struct ClosePlutus<'info> {
-  #[account(mut)]
-  pub payer: Signer<'info>,
-
-  #[account(
-  mut,
-  close = payer, // close account and return lamports to payer
-  )]
-  pub plutus: Account<'info, Plutus>,
-}
-
-#[derive(Accounts)]
-pub struct Update<'info> {
-  #[account(mut)]
-  pub plutus: Account<'info, Plutus>,
+    pub authority_pda: UncheckedAccount<'info>,
 }
 
 #[account]
 #[derive(InitSpace)]
-pub struct Plutus {
-  count: u8,
+pub struct Approval {
+    pub user: Pubkey,
+    pub amount: u64,
+    pub authority: Pubkey,
+    pub nonce: i64,
+}
+
+#[error_code]
+pub enum CustomError {
+    #[msg("Insufficient approval amount.")]
+    InsufficientApproval,
+    #[msg("Invalid nonce detected.")]
+    InvalidNonce,
+    #[msg("Unauthorized access.")]
+    Unauthorized,
 }
